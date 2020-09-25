@@ -1,0 +1,4 @@
+name = Photo Location
+description = "Add a geo-location formatter for image field"
+backdrop = 1.x
+type = module

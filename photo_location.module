@@ -1,0 +1,231 @@
+<?php
+
+/**
+ * @file
+ * Add a geo-location formatter for image field with EXIF GPS location data.
+ *
+ * Useful reference about using theme functions:
+ * https://api.backdropcms.org/api/backdrop/core%21modules%21system%21theme.api.php/group/themeable/1
+ * and also
+ * https://api.backdropcms.org/api/backdrop/core%21includes%21theme.inc/function/theme/1
+ */
+
+/**
+ * Implements hook_theme().
+ *
+ * Register this module with BackdropCMS core as a theme implementation.
+ */
+function photo_location_theme() {
+  return array(
+    'photo_location' => array(
+      'variables' => array(
+        'item' => NULL,
+        'image_link' => NULL,
+        'image_style' => NULL,
+      ),
+    ),
+  );
+}
+
+/**
+ * Implements hook_field_formatter_info().
+ *
+ * Produces an array describing the formatter implemented by this module.
+ */
+function photo_location_field_formatter_info() {
+  $formatters = array(
+    'image_url' => array(
+      'label' => t('Photo with location'),
+      'field types' => array('image'),
+      'settings' => array(
+        'image_style' => '',
+        'image_link' => '',
+      ),
+    ),
+  );
+
+  return $formatters;
+}
+
+/**
+ * Implements hook_field_formatter_settings_form().
+ *
+ * Specifies the form elements for administration of this module's settings.
+ */
+function photo_location_field_formatter_settings_form($field, $instance, $view_mode, $form, &$form_state) {
+  $display = $instance['display'][$view_mode];
+  $settings = $display['settings'];
+
+  // Selection of the style used to display the image.
+  $image_styles = image_style_options(FALSE);
+  $element['image_style'] = array(
+    '#title' => t('Image style'),
+    '#type' => 'select',
+    '#default_value' => $settings['image_style'],
+    '#empty_option' => t('None (original image)'),
+    '#options' => $image_styles,
+  );
+
+  // Define the options for links to maps.
+  $link_types = array(
+    'gmap' => t('Google Maps'),
+    'openstreet' => t('Open Street Map'),
+    'geohack' => t('Geo Hack'),
+  );
+
+  // Selection of the link to be applied to the coordinates.
+  $element['image_link'] = array(
+    '#title' => t('Link coordinates to'),
+    '#type' => 'select',
+    '#default_value' => $settings['image_link'],
+    '#empty_option' => t('Nothing'),
+    '#options' => $link_types,
+  );
+
+  return $element;
+}
+
+/**
+ * Implements hook_field_formatter_settings_summary().
+ *
+ * Returns a short summary of the current formatter settings for the display of a field.
+ * This summary appears in the 'manage displays' page for any content type applying
+ * this formatter 'photo with location' to a relevant image field.
+ */
+function photo_location_field_formatter_settings_summary($field, $instance, $view_mode) {
+  $display = $instance['display'][$view_mode];
+  $settings = $display['settings'];
+
+  $summary = array();
+
+  $image_styles = image_style_options(FALSE);
+  // Unset possible 'No defined styles' option.
+  unset($image_styles['']);
+  // Styles could be lost because of enabled/disabled modules that define their styles in code.
+  if (isset($image_styles[$settings['image_style']])) {
+    $summary[] = t('URL for image style: @style', array('@style' => $image_styles[$settings['image_style']]));
+  }
+  else {
+    $summary[] = t('Original image URL');
+  }
+
+  // define the link types available in this module.
+  $link_types = array(
+    'gmap' => t('Linked to Google Maps'),
+    'openstreet' => t('Linked to Open Street Map'),
+    'geohack' => t('Linked to GeoHack'),
+  );
+
+  // Display this setting only if image is linked.
+  if (isset($link_types[$settings['image_link']])) {
+    $summary[] = $link_types[$settings['image_link']];
+  }
+
+  return implode('<br />', $summary);
+}
+
+/**
+ * Implements hook_field_formatter_view().
+ *
+ * Builds an array of values for rendering the field.
+ */
+function photo_location_field_formatter_view($entity_type, $entity, $field, $instance, $langcode, $items, $display) {
+  $element = array();
+
+  foreach ($items as $delta => $item) {
+    $element[$delta] = array(
+      '#theme' => 'photo_location',
+      '#item' => $item,
+      '#image_style' => $display['settings']['image_style'],
+      '#image_link' => $display['settings']['image_link'],
+    );
+  }
+  return $element;
+}
+
+/**
+ * Returns HTML for this image field, the photo location and link to selected map.
+ *
+ * @param array $variables
+ *   An associative array containing:
+ *   - item: An array of image data.
+ *   - image_style: An optional image style.
+ *   - image_link: A string indicating which map to link to.
+ *
+ * @ingroup themeable
+ */
+
+function theme_photo_location($variables) {
+  $item = $variables['item'];
+  $output = 'location information is not available for this image';
+  // check that file is an image
+  if($item['type'] == 'image'){
+    $uri = $item['uri'];
+    // obtain URL from URI
+    $url = backdrop_realpath($uri);
+
+    // check that this URL is an image
+    if ($info = image_get_info($url)) {
+      // check that EXIF data can be read
+      if (function_exists('exif_read_data')) {
+        // get latitude and longitude
+        $exif = @exif_read_data($url);
+
+        if (is_array($exif)) {
+          // extract latitude and longitude values from EXIF data
+          $latitude = _photo_location_gps($exif["GPSLatitude"], $exif['GPSLatitudeRef']);
+          $longitude = _photo_location_gps($exif["GPSLongitude"], $exif['GPSLongitudeRef']);
+          $output = $latitude . ', ' . $longitude;
+          // select appropriate link for chosen map.
+          switch($variables['image_link']){
+            case gmap:
+              $link = '<a href="https://www.google.com/maps/search/?api=1&query=' . $output . '">' . $output . '</a>';
+              break;
+
+            case openstreet:
+              $link = '<a href="https://www.openstreetmap.org/?mlat=' . $latitude . '&mlon=' . $longitude . '">' . $output . '</a>';
+              break;
+
+            case geohack:
+              $link = '<a href="https://geohack.toolforge.org/geohack.php?language=en&params=' . $latitude . ';' . $longitude . '">' . $output . '</a>';
+          }
+
+          // create image file URL from URI, modifying it if a style has been specified.
+          $image_style = $variables['image_style'];
+          if($image_style == ''){
+            $url = file_create_url($uri);
+          } else {
+            $url = image_style_url($image_style, $uri);
+          }
+          $output = '<img src="'. $url . '"><br /><span>Coordinates: </span><span class="field-content">' . $link;
+        }
+      }
+    }
+  }
+  return $output;
+}
+
+/**
+ * Calculates the digital coordinates from EXIF GPS data.
+ *
+ * $coordinate is an array of degrees, minutes and seconds
+ * $hemisphere is N/S, E/W.
+ */
+function _photo_location_gps($coordinate, $hemisphere) {
+  if (is_string($coordinate)) {
+    $coordinate = array_map("trim", explode(",", $coordinate));
+  }
+  for ($i = 0; $i < 3; $i++) {
+    $part = explode('/', $coordinate[$i]);
+    if (count($part) == 1) {
+      $coordinate[$i] = $part[0];
+    } else if (count($part) == 2) {
+      $coordinate[$i] = floatval($part[0])/floatval($part[1]);
+    } else {
+      $coordinate[$i] = 0;
+    }
+  }
+  list($degrees, $minutes, $seconds) = $coordinate;
+  $sign = ($hemisphere == 'W' || $hemisphere == 'S') ? -1 : 1;
+  return $sign * number_format($degrees + $minutes/60 + $seconds/3600, 6);
+}
